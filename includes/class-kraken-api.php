@@ -66,9 +66,33 @@ class KrakenAPI
     }
 
     public function getBalance() {
-        return $this->queryPrivate('Balance');
+     //   return $this->queryPrivate('Balance');
+
+
+
+        $path = '/0/private/Balance';
+        $nonce = explode(' ', microtime())[1] . str_pad(explode(' ', microtime())[0] * 1000000, 6, '0', STR_PAD_LEFT);
+    
+        $postData = http_build_query([
+            'nonce' => $nonce,
+        ], '', '&');
+    
+        $signature = hash_hmac('sha512', $path . hash('sha256', $nonce . $postData, true), base64_decode($this->apiSecret), true);
+        $headers = [
+            'API-Key: ' . $this->apiKey,
+            'API-Sign: ' . base64_encode($signature)
+        ];
+    
+        $ch = curl_init('https://api.kraken.com' . $path);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
+        $response = curl_exec($ch);
+        curl_close($ch);
+    
+        return json_decode($response, true);
+
     }
 
 }
 
-// Thanks, Now I want to monitor the the current ballance in each second by a graph chart by using javascript. Which plugin I can use for the graph chart? I want to make a shortcode for it, and will use this shortcode in any page. 
