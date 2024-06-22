@@ -35,7 +35,6 @@ function gtb_settings_page() {
        update_option('gtb_lower_limit', floatval($_POST['lower_limit']));
        update_option('gtb_upper_limit', floatval($_POST['upper_limit']));
        update_option('gtb_num_grids', intval($_POST['num_grids']));
-
        
        update_option('coinbase_api_key', sanitize_text_field($_POST['coinbase_api_key']));
        update_option('kraken_api_key', sanitize_text_field($_POST['kraken_api_key']));
@@ -58,10 +57,46 @@ function gtb_settings_page() {
    $currentPrice = $bot->getBitcoinPrice();
 
    echo '<div class="wrap"><h1>Grid Trading Bot Settings</h1>';
-   echo '<p>Current Bitcoin Price: $' . esc_html($currentPrice) . '</p>';
+//   echo '<p>Current Bitcoin Price: $' . esc_html($currentPrice) . '</p>';
+
+   $kraken = new KrakenAPI(get_option('kraken_api_key'), get_option('kraken_api_secret'));
+   $balance = $kraken->getBalance();
+
+
+   $tickerData = $kraken->getTicker('ETHUSDT');
+
+
+   if ($tickerData && isset($tickerData['result']['ETHUSDT']['v'][1])) {
+      $volume = floatval($tickerData['result']['ETHUSDT']['v'][1]);
+      $threshold = $volume * 0.05;
+      print_r($volume);
+      echo '<br>';
+      print_r($threshold);
+      echo '<br>';
+
+      if ($volume >= $threshold) {
+          $orderResponse = $kraken->addOrder('ETHUSDT', 'buy', 'limit', 0.01); // Example values
+          echo '<div class="updated"><p>Buy order placed: </p></div>';
+          print_r($orderResponse);
+          echo '<div class="updated"><p>Volume: </p></div>';
+      } else {
+          echo '<div class="updated"><p>Volume is below the threshold.</p></div>';
+      }
+  } else {
+    echo '<div class="updated"><p>Failed to fetch ticker data.</p></div>';
+  }
+
+
+  echo '<pre>'; 
+  echo print_r($tickerData);
+  echo '</pre>';
+
+
+
 
    echo '<pre>'; 
  //  print_r($bot->getBitcoinPriceData()); 
+   echo '<p>Kraken Balance: ' . esc_html(print_r($balance, true)) . '</p>';
    echo '</pre>';
 
    echo '<form method="post">';
@@ -82,5 +117,278 @@ function gtb_settings_page() {
    echo '</form></div>';
    
 }
+
+
+function enqueue_chartjs() {
+    wp_enqueue_script('chartjs', 'https://cdn.jsdelivr.net/npm/chart.js', array(), null, true);
+}
+add_action('wp_enqueue_scripts', 'enqueue_chartjs');
+/*
+function kraken_balance_shortcode() {
+    ob_start(); ?>
+    <canvas id="kraken-balance-chart" style="width: 1000px; height: 700px;"></canvas>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0"></script>
+    <script>
+        async function fetchBalance_async() {
+            const response = await fetch('<?php echo admin_url('admin-ajax.php?action=fetch_kraken_balance'); ?>');
+            const balanceData = await response.json();
+            if (balanceData.error) {
+                console.log('chartcccc');
+                console.error('Error fetching balance:', balanceData.error);
+                return;
+            }
+
+            // Assuming 'USDT' is the key for USD balance
+            const usdBalance = balanceData.balance.result['USDT'] ? parseFloat(balanceData.balance.result['USDT']) : 0;
+            
+            // Update the chart
+            if (chart) {
+                
+                const now = new Date();
+                const shortTime = now.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                chart.data.labels.push(shortTime);
+                chart.data.datasets[0].data.push(usdBalance);
+
+                // Keep only the last 10 data points
+                if (chart.data.labels.length > 10) {
+                    chart.data.labels.shift();
+                    chart.data.datasets[0].data.shift();
+                }
+
+                chart.update();
+            }
+        }
+
+
+        async function fetchInitialBalance() {
+            const response = await fetch('<?php echo admin_url('admin-ajax.php?action=fetch_kraken_balance'); ?>');
+            const balanceData = await response.json();
+
+            if (balanceData.error) {
+                console.error('Error fetching initial balance:', balanceData.error);
+                return { labels: [], data: [] };
+            }
+
+        //    console.log("balanceData.balance.result['USDT']", balanceData.data.balance.result['USDT']);
+
+            const usdBalance = balanceData.data.balance.result['USDT'] ? parseFloat(balanceData.data.balance.result['USDT']) : 0;
+            return { labels: [new Date().toLocaleTimeString()], data: [usdBalance] };
+        }
+
+        async function fetchBalance() {
+            const response = await fetch('<?php echo admin_url('admin-ajax.php?action=fetch_kraken_balance'); ?>');
+            const balanceData = await response.json();
+
+            if (balanceData.error) {
+                console.error('Error fetching balance:', balanceData.error);
+                return;
+            }
+
+            const usdBalance = balanceData.data.balance.result['USDT'] ? parseFloat(balanceData.data.balance.result['USDT']) : 0;
+
+            if (chart) {
+                const now = new Date();
+                chart.data.labels.push(now.toLocaleTimeString());
+                chart.data.datasets[0].data.push(usdBalance);
+
+                if (chart.data.labels.length > 10) {
+                    chart.data.labels.shift();
+                    chart.data.datasets[0].data.shift();
+                }
+
+                chart.update();
+            }
+        }
+
+
+        let chart;
+        document.addEventListener('DOMContentLoaded', async function() {
+            const initialData = await fetchInitialBalance();
+            console.log('initialData',initialData);
+            const ctx = document.getElementById('kraken-balance-chart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [new Date().toLocaleTimeString()], // Time labels
+                    datasets: [{
+                        label: 'USD Balance',
+                        data: initialData.data, // Balance data
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            },
+                            type: 'time',
+                            time: {
+                                unit: 'minute'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Balance (USD)'
+                            }
+                        }
+                    }
+                }
+            });
+
+            fetchBalance();
+            setInterval(fetchBalance, 3000); // Fetch balance every second
+        });
+    </script>
+    <?php
+    return ob_get_clean();
+}
+
+add_shortcode('kraken_balance', 'kraken_balance_shortcode');
+*/
+
+
+function fetch_kraken_balance() {
+    // Your code to fetch the balance from Kraken API
+    $kraken = new KrakenAPI(get_option('kraken_api_key'), get_option('kraken_api_secret'));
+    $balance = $kraken->getTicker("XBTUSD"); // Assume getBalance() returns the balance
+
+    if ($balance) {
+        wp_send_json_success(['balance' => $balance]);
+    } else {
+        wp_send_json_error('Failed to fetch balance');
+    }
+}
+add_action('wp_ajax_fetch_kraken_balance', 'fetch_kraken_balance');
+add_action('wp_ajax_nopriv_fetch_kraken_balance', 'fetch_kraken_balance');
+
+
+/* ================================================================================================= */
+/* ================================================================================================= */
+
+
+
+function kraken_ticker_shortcode() {
+    ob_start(); ?>
+    <canvas id="kraken-ticker-chart" style="width: 100%; height: 400px;"></canvas>
+    <div id="kraken-ticker"></div>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script>
+      async function fetchInitialTickerData() {
+        const response = await fetch('<?php echo admin_url('admin-ajax.php?action=fetch_kraken_ticker&nonce=' . wp_create_nonce('fetch_kraken_ticker')); ?>');
+        const data = await response.json();
+  
+        if (data.error) {
+          console.error('Error fetching initial data:', data.error);
+          return { labels: [], data: [], ticker: {} };
+        }
+  
+        const ticker = data.ticker;
+  
+        return { labels: [new Date().toLocaleTimeString()], data: [parseFloat(ticker.result.ETHUSDT.v[0])], ticker: ticker };
+      }
+  
+      async function fetchTickerData() {
+        const response = await fetch('<?php echo admin_url('admin-ajax.php?action=fetch_kraken_ticker&nonce=' . wp_create_nonce('fetch_kraken_ticker')); ?>');
+        const data = await response.json();
+  
+        if (data.error) {
+          console.error('Error fetching data:', data.error);
+          return;
+        }
+  
+        const ticker = data.ticker;
+        const tickerPrice = parseFloat(ticker.result.ETHUSDT.v[0]);
+  
+        if (chart) {
+          const now = new Date();
+          chart.data.labels.push(now.toLocaleTimeString());
+          chart.data.datasets[0].data.push(tickerPrice);
+  
+          if (chart.data.labels.length > 50) {
+            chart.data.labels.shift();
+            chart.data.datasets[0].data.shift();
+          }
+  
+          chart.update();
+        }
+  
+        // Update ticker data
+        document.getElementById('kraken-ticker').innerHTML = `
+          <strong>ETH/USDT:</strong> ${ticker.result.ETHUSDT.v[0]} USD
+        `;
+      }
+  
+      let chart;
+      document.addEventListener('DOMContentLoaded', async function() {
+        const initialData = await fetchInitialTickerData();
+  
+        const ctx = document.getElementById('kraken-ticker-chart').getContext('2d');
+        chart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: initialData.labels,
+            datasets: [{
+              label: 'ETH/USDT Price',
+              data: initialData.data,
+              borderColor: 'rgba(75, 192, 192, 1)',
+              borderWidth: 1
+            }]
+          },
+          options: {
+            scales: {
+              x: {
+                time: {
+                  unit: 'second'
+                },
+                title: {
+                  display: true,
+                  text: 'Time'
+                }
+              },
+              y: {
+                title: {
+                  display: true,
+                  text: 'Price (USD)'
+                }
+              }
+            }
+          }
+        });
+  
+        // Display initial ticker data
+        document.getElementById('kraken-ticker').innerHTML = `
+          <strong>ETH/USDT:</strong> ${initialData.ticker.result.ETHUSDT.v[0]} USD
+        `;
+  
+        fetchTickerData();
+        setInterval(fetchTickerData, 5000);
+      });
+    </script>
+    <?php
+    return ob_get_clean();
+  }
+
+add_shortcode('kraken_ticker', 'kraken_ticker_shortcode');
+
+function fetch_kraken_ticker() {
+    $kraken = new KrakenAPI(get_option('kraken_api_key'), get_option('kraken_api_secret'));
+    $ticker = $kraken->getTicker('ETHUSDT');
+    
+    $response = [
+        'ticker' => $ticker
+    ];
+    
+    wp_send_json($response);
+}
+add_action('wp_ajax_fetch_kraken_ticker', 'fetch_kraken_ticker');
+add_action('wp_ajax_nopriv_fetch_kraken_ticker', 'fetch_kraken_ticker');
+
+
 
 
