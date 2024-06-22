@@ -392,3 +392,189 @@ add_action('wp_ajax_nopriv_fetch_kraken_ticker', 'fetch_kraken_ticker');
 
 
 
+
+/* ================================================================================================= */
+/* ============= Add a function to fetch and save ticker data to the database: ===================== */
+/* ================================================================================================= */
+function create_ticker_data_table() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'ticker_data';
+    $charset_collate = $wpdb->get_charset_collate();
+
+    $sql = "CREATE TABLE $table_name (
+        id mediumint(9) NOT NULL AUTO_INCREMENT,
+        time datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        price float NOT NULL,
+        volume float NOT NULL,
+        PRIMARY KEY  (id)
+    ) $charset_collate;";
+
+    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    dbDelta($sql);
+}
+register_activation_hook(__FILE__, 'create_ticker_data_table');
+
+// Register custom cron schedule
+function custom_cron_schedules($schedules) {
+    $schedules['every_five_seconds'] = array(
+        'interval' => 5,
+        'display' => __('Every 5 Seconds')
+    );
+    return $schedules;
+}
+add_filter('cron_schedules', 'custom_cron_schedules');
+
+// Schedule the cron event
+function schedule_ticker_cron() {
+    if (!wp_next_scheduled('fetch_ticker_data_event')) {
+        wp_schedule_event(time(), 'every_five_seconds', 'fetch_ticker_data_event');
+    }
+}
+add_action('wp', 'schedule_ticker_cron');
+
+// Unschedule the cron event on plugin deactivation
+function unschedule_ticker_cron() {
+    $timestamp = wp_next_scheduled('fetch_ticker_data_event');
+    if ($timestamp) {
+        wp_unschedule_event($timestamp, 'fetch_ticker_data_event');
+    }
+}
+register_deactivation_hook(__FILE__, 'unschedule_ticker_cron');
+
+// Fetch and save ticker data
+function fetch_and_save_ticker_data() {
+    // Ensure the KrakenAPI class is loaded
+    if (!class_exists('KrakenAPI')) {
+        require_once plugin_dir_path(__FILE__) . 'includes/class-kraken-api.php';
+    }
+
+    // Get API key and secret from options
+    $kraken_api_key = get_option('kraken_api_key');
+    $kraken_api_secret = get_option('kraken_api_secret');
+
+    // Create a new instance of the KrakenAPI class
+    $kraken = new KrakenAPI($kraken_api_key, $kraken_api_secret);
+
+    // Fetch ticker data
+    $ticker_data = $kraken->getTicker('ETHUSDT');
+
+    /*
+    if (!is_wp_error($ticker_data) && isset($ticker_data['result']['ETHUSDT']['v'][0])) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'ticker_data';
+        $price = floatval($ticker_data['result']['ETHUSDT']['v'][0]);
+
+        // Insert the ticker data into the database
+        $wpdb->insert(
+            $table_name,
+            array(
+                'time' => current_time('mysql'),
+                'price' => $price
+            )
+        );
+    } else {
+        error_log('Failed to fetch ticker data.');
+    }
+    */
+    if (isset($ticker_data['result']['ETHUSDT'])) {
+        $price = $ticker_data['result']['ETHUSDT']['c'][0];
+        $volume = $ticker_data['result']['ETHUSDT']['v'][1]; // 24h volume
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'ticker_data';
+        $wpdb->insert($table_name, [
+            'time' => current_time('mysql'),
+            'price' => $price,
+            'volume' => $volume
+        ]);
+    }
+}
+add_action('fetch_ticker_data_event', 'fetch_and_save_ticker_data');
+
+// Fetch data for the live chart
+function fetch_live_ticker_data() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'ticker_data';
+
+    $data = $wpdb->get_results("SELECT * FROM $table_name ORDER BY time DESC LIMIT 70", ARRAY_A);
+
+    if ($data) {
+        wp_send_json_success(array_reverse($data)); // Reversing to get chronological order
+    } else {
+        wp_send_json_error('No data found');
+    }
+}
+add_action('wp_ajax_fetch_live_ticker_data', 'fetch_live_ticker_data');
+add_action('wp_ajax_nopriv_fetch_live_ticker_data', 'fetch_live_ticker_data');
+
+
+// Shortcode function for displaying the live chart
+function kraken_ticker_live_shortcode() {
+    
+    ob_start(); ?>
+    <canvas id="kraken-ticker-chart" style="width: 100%; height: 500px;"></canvas>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        async function fetchLiveTickerData() {
+            const response = await fetch('<?php echo admin_url('admin-ajax.php?action=fetch_live_ticker_data'); ?>');
+            const tickerData = await response.json();
+
+            if (tickerData.success) {
+                // Initialize the chart with the fetched ticker data
+                const labels = tickerData.data.map(item => new Date(item.time).toLocaleTimeString());
+                const prices = tickerData.data.map(item => item.price);
+
+                if (chart) {
+                    chart.data.labels = labels;
+                    chart.data.datasets[0].data = prices;
+                    chart.update();
+                }
+            } else {
+                console.error('Error fetching ticker data:', tickerData.data);
+            }
+        }
+
+        let chart;
+        document.addEventListener('DOMContentLoaded', function() {
+            const ctx = document.getElementById('kraken-ticker-chart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [], // Time labels
+                    datasets: [{
+                        label: 'ETH/USDT Price',
+                        data: [], // Price data
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    scales: {
+                        x: {
+                            time: {
+                                unit: 'second'
+                            },
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Price (USDT)'
+                            }
+                        }
+                    }
+                }
+            });
+
+            fetchLiveTickerData();
+            setInterval(fetchLiveTickerData, 5000); // Fetch live ticker data every 5 seconds
+        });
+    </script>
+    <?php
+    return ob_get_clean();
+}
+
+add_shortcode('kraken_ticker_live', 'kraken_ticker_live_shortcode');
