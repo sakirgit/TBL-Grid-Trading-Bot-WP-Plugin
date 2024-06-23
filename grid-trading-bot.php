@@ -86,13 +86,9 @@ function gtb_settings_page() {
     echo '<div class="updated"><p>Failed to fetch ticker data.</p></div>';
   }
 
-
   echo '<pre>'; 
   echo print_r($tickerData);
   echo '</pre>';
-
-
-
 
    echo '<pre>'; 
  //  print_r($bot->getBitcoinPriceData()); 
@@ -115,10 +111,7 @@ function gtb_settings_page() {
          </table>';
    echo '<input type="submit" name="save_settings" value="Save Settings" class="button button-primary">';
    echo '</form></div>';
-   
 }
-
-
 
 /* ================================================================================================= */
 /* ============= Add a function to fetch and save ticker data to the database: ===================== */
@@ -200,24 +193,56 @@ function fetch_and_save_ticker_data() {
 }
 add_action('fetch_ticker_data_event', 'fetch_and_save_ticker_data');
 
-
-
 function trigger_buy_based_on_volume() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'ticker_data';
 
-    $volume_data = $wpdb->get_results("SELECT volume FROM $table_name ORDER BY time DESC LIMIT 1");
-    $current_volume = $volume_data ? $volume_data[0]->volume : 0;
-
-    $previous_data = $wpdb->get_results("SELECT volume FROM $table_name ORDER BY time DESC LIMIT 2");
-    $previous_volume = (count($previous_data) > 1) ? $previous_data[1]->volume : 0;
-
-    if ($previous_volume > 0 && ($current_volume / $previous_volume) >= 1.05) {
-        // Trigger buy order here
+    $volume_data = $wpdb->get_results("SELECT volume FROM $table_name ORDER BY time DESC LIMIT 2");
+    if (count($volume_data) < 2) {
+        return; // Not enough data to compare
     }
-}
 
-add_action('fetch_and_save_ticker_data', 'trigger_buy_based_on_volume');
+    $current_volume = $volume_data[0]->volume;
+    $previous_volume = $volume_data[1]->volume;
+
+    $volume_increase = (($current_volume - $previous_volume) / $previous_volume) * 100;
+
+    $order_placed = false; // flag to indicate if order was placed
+
+    if ($volume_increase >= 5) {
+        // Ensure the KrakenAPI class is loaded
+        if (!class_exists('KrakenAPI')) {
+            require_once plugin_dir_path(__FILE__) . 'includes/class-kraken-api.php';
+        }
+
+        // Get API key and secret from options
+        $kraken_api_key = get_option('kraken_api_key');
+        $kraken_api_secret = get_option('kraken_api_secret');
+
+        // Create a new instance of the KrakenAPI class
+        $kraken = new KrakenAPI($kraken_api_key, $kraken_api_secret);
+
+        // Trigger buy order here
+        $orderResponse = $kraken->addOrder('ETHUSDT', 'buy', 'limit', 0.01); // Example values
+
+        // Log the response or handle it as needed
+        if ($orderResponse) {
+            // Log or handle successful buy order
+            echo '<div class="updated"><p>Buy order placed successfully.</p></div>';
+            $order_placed = true;
+        } else {
+            // Log or handle buy order failure
+            echo '<div class="updated"><p>Buy order failed.</p></div>';
+        }
+    } else {
+        echo '<div class="updated"><p>Volume increase is below 5% threshold.</p></div>';
+    }
+
+    // Save the volume increase percentage and order placed status
+    update_option('last_volume_increase', $volume_increase);
+    update_option('last_order_placed', $order_placed);
+}
+add_action('fetch_ticker_data_event', 'trigger_buy_based_on_volume');
 
 
 
@@ -227,116 +252,149 @@ function fetch_live_ticker_data() {
     $table_name = $wpdb->prefix . 'ticker_data';
 
     $data = $wpdb->get_results("SELECT * FROM $table_name ORDER BY time DESC LIMIT 70", ARRAY_A);
+    
+    $response = [
+        'data' => $data ? array_reverse($data) : [],
+        'last_volume_increase' => get_option('last_volume_increase'),
+        'last_order_placed' => get_option('last_order_placed')
+    ];
 
     if ($data) {
-        wp_send_json_success(array_reverse($data)); // Reversing to get chronological order
+        if ($response['last_order_placed']) {
+            $response['data'][0]['order'] = true; // Mark the most recent entry with the order flag
+        }
+        wp_send_json_success($response);
     } else {
         wp_send_json_error('No data found');
     }
+
 }
 add_action('wp_ajax_fetch_live_ticker_data', 'fetch_live_ticker_data');
 add_action('wp_ajax_nopriv_fetch_live_ticker_data', 'fetch_live_ticker_data');
 
 
 // Shortcode function for displaying the live chart
+
 function kraken_ticker_live_shortcode() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'ticker_data';
     $results = $wpdb->get_results("SELECT time, price, volume FROM $table_name ORDER BY time DESC LIMIT 70");
-  
+
+    // Get the last volume increase percentage and order placed status
+    $last_volume_increase = get_option('last_volume_increase');
+    $last_order_placed = get_option('last_order_placed');
+
     // Format time to AM/PM format with seconds
     $time_labels = array_map(function($item) {
-      return date("g:i:s A", strtotime($item->time));
+        return date("g:i:s A", strtotime($item->time));
     }, array_reverse($results));
-  
+
     $prices = array_reverse(array_column($results, 'price'));
     $volumes = array_reverse(array_column($results, 'volume'));
-  
+
     ob_start(); ?>
-    <canvas id="kraken-ticker-chart" style="width: 100%; height: 550px;"></canvas>
+    <div>
+        <h4>Current Volume Increase<strong>: <span id="current-volume-increase"><?php echo esc_html($last_volume_increase); ?></span>%</strong> &nbsp; &nbsp; &nbsp; &nbsp;
+        Last Buy Order<strong>: <span id="last-buy-order"> <?php echo $last_order_placed ? 'Successfully Placed' : 'Not Placed'; ?></span></strong></h4>
+    </div>
+    <canvas id="kraken-ticker-chart" style="width: 100%; height: 700px;"></canvas>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
-      document.addEventListener('DOMContentLoaded', function() {
-        const ctx = document.getElementById('kraken-ticker-chart').getContext('2d');
-        const chart = new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: <?php echo json_encode($time_labels); ?>,
-            datasets: [{
-              label: 'ETH/USDT Price',
-              data: <?php echo json_encode($prices); ?>,
-              borderColor: 'rgba(75, 192, 192, 1)',
-              borderWidth: 1
-            }, {
-              label: '24h Volume',
-              data: <?php echo json_encode($volumes); ?>,
-              borderColor: 'rgba(192, 75, 192, 1)',
-              borderWidth: 1,
-              yAxisID: 'y-axis-2'
-            }]
-          },
-          options: {
-            scales: {
-              x: {
-                time: {
-                  unit: 'second', // Display seconds on the x-axis
+        document.addEventListener('DOMContentLoaded', function() {
+            const ctx = document.getElementById('kraken-ticker-chart').getContext('2d');
+            const chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: <?php echo json_encode($time_labels); ?>,
+                    datasets: [{
+                        label: 'ETH/USDT Price',
+                        data: <?php echo json_encode($prices); ?>,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }, {
+                        label: '24h Volume',
+                        data: <?php echo json_encode($volumes); ?>,
+                        borderColor: 'rgba(192, 75, 192, 1)',
+                        borderWidth: 1,
+                        yAxisID: 'y-axis-2'
+                    }]
                 },
-                title: {
-                  display: true,
-                  text: 'Time'
+                options: {
+                    scales: {
+                        x: {
+                            time: {
+                                unit: 'second', // Display seconds on the x-axis
+                            },
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Price (USDT)'
+                            }
+                        },
+                        'y-axis-2': {
+                            type: 'linear',
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'Volume'
+                            }
+                        }
+                    }
                 }
-              },
-              y: {
-                title: {
-                  display: true,
-                  text: 'Price (USDT)'
+            });
+
+            async function fetchLiveTickerData() {
+                const response = await fetch('<?php echo admin_url('admin-ajax.php?action=fetch_live_ticker_data'); ?>');
+                const tickerData = await response.json();
+
+                if (tickerData.error) {
+                    console.error('Error fetching ticker:', tickerData.error);
+                    return;
                 }
-              },
-              'y-axis-2': {
-                type: 'linear',
-                position: 'right',
-                title: {
-                  display: true,
-                  text: 'Volume'
-                }
-              }
+
+            //    console.log('tickerData:', tickerData);
+                const data = tickerData.data.data;
+                const labels = [];
+                const prices = [];
+                const volumes = [];
+                let orderPlaced = false;
+
+                data.forEach(entry => {
+                    const time = new Date(entry.time);
+                    labels.push(time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }));
+                    prices.push(entry.price);
+                    volumes.push(entry.volume);
+
+                    if (orderPlaced && entry.order) {
+                        // Highlight the point where the buy order was placed
+                        chart.data.datasets[0].pointBackgroundColor = chart.data.datasets[0].pointBackgroundColor || [];
+                        chart.data.datasets[0].pointBackgroundColor[labels.length - 1] = 'red';
+                    }
+
+                    orderPlaced = entry.order;
+                });
+
+                chart.data.labels = labels;
+                chart.data.datasets[0].data = prices;
+                chart.data.datasets[1].data = volumes;
+                chart.update();
+
+                // Update volume increase and order placed status
+                document.getElementById('current-volume-increase').innerText = tickerData.data.last_volume_increase;
+                document.getElementById('last-buy-order').innerText = tickerData.data.last_order_placed ? 'Successfully Placed' : 'Not Placed';
             }
-          }
+
+            fetchLiveTickerData(); // Initial fetch
+            setInterval(fetchLiveTickerData, 5000); // Fetch every 5 seconds
         });
-  
-        async function fetchLiveTickerData() {
-          const response = await fetch('<?php echo admin_url('admin-ajax.php?action=fetch_live_ticker_data'); ?>');
-          const tickerData = await response.json();
-  
-          if (tickerData.error) {
-            console.error('Error fetching ticker:', tickerData.error);
-            return;
-          }
-  
-          const data = tickerData.data;
-          const labels = [];
-          const prices = [];
-          const volumes = [];
-  
-          data.forEach(entry => {
-            const time = new Date(entry.time);
-            labels.push(time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }));
-            prices.push(entry.price);
-            volumes.push(entry.volume);
-          });
-  
-          chart.data.labels = labels;
-          chart.data.datasets[0].data = prices;
-          chart.data.datasets[1].data = volumes;
-          chart.update();
-        }
-  
-        fetchLiveTickerData(); // Initial fetch
-        setInterval(fetchLiveTickerData, 5000); // Fetch every 5 seconds
-      });
     </script>
     <?php
     return ob_get_clean();
 }
-
 add_shortcode('kraken_ticker_live', 'kraken_ticker_live_shortcode');
+

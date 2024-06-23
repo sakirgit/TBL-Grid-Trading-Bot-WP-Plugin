@@ -39,11 +39,8 @@ class KrakenAPI
         if (is_wp_error($response)) {
             return false;
         }
-
         return json_decode(wp_remote_retrieve_body($response), true);
     }
-
-
 
     public function getTicker($pair) {
         $url = 'https://api.kraken.com/0/public/Ticker?pair=' . $pair;
@@ -68,8 +65,6 @@ class KrakenAPI
     public function getBalance() {
      //   return $this->queryPrivate('Balance');
 
-
-
         $path = '/0/private/Balance';
         $nonce = explode(' ', microtime())[1] . str_pad(explode(' ', microtime())[0] * 1000000, 6, '0', STR_PAD_LEFT);
     
@@ -91,8 +86,6 @@ class KrakenAPI
         curl_close($ch);
     
         return json_decode($response, true);
-
     }
-
 }
 
